@@ -176,7 +176,9 @@ func (c *genericCombiner[T]) GRPCFinal() (T, error) {
 		return empty, err
 	}
 
-	return final, nil
+	// clone the final response to prevent race conditions with marshalling this data
+	finalClone := proto.Clone(final).(T)
+	return finalClone, nil
 }
 
 func (c *genericCombiner[T]) GRPCDiff() (T, error) {
@@ -194,7 +196,9 @@ func (c *genericCombiner[T]) GRPCDiff() (T, error) {
 		return empty, err
 	}
 
-	return diff, nil
+	// clone the diff to prevent race conditions with marshalling this data
+	diffClone := proto.Clone(diff)
+	return diffClone.(T), nil
 }
 
 func (c *genericCombiner[T]) erroredResponse() (*http.Response, error) {
@@ -204,12 +208,19 @@ func (c *genericCombiner[T]) erroredResponse() (*http.Response, error) {
 
 	// build grpc error and http response
 	var grpcErr error
-	if c.httpStatusCode/100 == 5 {
-		grpcErr = status.Error(codes.Internal, c.httpRespBody)
-	} else if c.httpStatusCode == http.StatusTooManyRequests {
+	switch c.httpStatusCode {
+	case http.StatusNotFound:
+		grpcErr = status.Error(codes.NotFound, c.httpRespBody)
+	case http.StatusTooManyRequests:
 		grpcErr = status.Error(codes.ResourceExhausted, c.httpRespBody)
-	} else {
+	case http.StatusBadRequest:
 		grpcErr = status.Error(codes.InvalidArgument, c.httpRespBody)
+	default:
+		if c.httpStatusCode/100 == 5 {
+			grpcErr = status.Error(codes.Internal, c.httpRespBody)
+		} else {
+			grpcErr = status.Error(codes.Unknown, c.httpRespBody)
+		}
 	}
 	httpResp := &http.Response{
 		StatusCode: c.httpStatusCode,

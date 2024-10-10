@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +37,6 @@ const (
 	urlParamEnd             = "end"
 	urlParamSpansPerSpanSet = "spss"
 	urlParamStep            = "step"
-	urlParamShard           = "shard"
-	urlParamShardCount      = "shardCount"
 	urlParamSince           = "since"
 	urlParamExemplars       = "exemplars"
 
@@ -145,13 +144,6 @@ func ParseSearchRequest(r *http.Request) (*tempopb.SearchRequest, error) {
 
 	query, queryFound := extractQueryParam(vals, urlParamQuery)
 	if queryFound {
-		// TODO hacky fix: we don't validate {} since this isn't handled correctly yet
-		if query != "{}" {
-			_, err := traceql.Parse(query)
-			if err != nil {
-				return nil, fmt.Errorf("invalid TraceQL query: %w", err)
-			}
-		}
 		req.Query = query
 	}
 
@@ -381,15 +373,6 @@ func ParseQueryRangeRequest(r *http.Request) (*tempopb.QueryRangeRequest, error)
 	}
 	req.Step = uint64(step.Nanoseconds())
 
-	shardCount, _ := extractQueryParam(vals, urlParamShardCount)
-	if shardCount, err := strconv.Atoi(shardCount); err == nil {
-		req.ShardCount = uint32(shardCount)
-	}
-	shard, _ := extractQueryParam(vals, urlParamShard)
-	if shard, err := strconv.Atoi(shard); err == nil {
-		req.ShardID = uint32(shard)
-	}
-
 	// New RF1 params
 	blockID, _ := extractQueryParam(vals, urlParamBlockID)
 	if blockID, err := uuid.Parse(blockID); err == nil {
@@ -459,7 +442,10 @@ func BuildQueryInstantRequest(req *http.Request, searchReq *tempopb.QueryInstant
 	return req
 }
 
-func BuildQueryRangeRequest(req *http.Request, searchReq *tempopb.QueryRangeRequest) *http.Request {
+// BuildQueryRangeRequest takes a tempopb.QueryRangeRequest and populates the passed http.Request
+// dedicatedColumnsJSON should be generated using the DedicatedColumnsToJSON struct which produces the expected string
+// value and memoizes results to prevent redundant marshaling.
+func BuildQueryRangeRequest(req *http.Request, searchReq *tempopb.QueryRangeRequest, dedicatedColumnsJSON string) *http.Request {
 	if req == nil {
 		req = &http.Request{
 			URL: &url.URL{},
@@ -474,8 +460,6 @@ func BuildQueryRangeRequest(req *http.Request, searchReq *tempopb.QueryRangeRequ
 	qb.addParam(urlParamStart, strconv.FormatUint(searchReq.Start, 10))
 	qb.addParam(urlParamEnd, strconv.FormatUint(searchReq.End, 10))
 	qb.addParam(urlParamStep, time.Duration(searchReq.Step).String())
-	qb.addParam(urlParamShard, strconv.FormatUint(uint64(searchReq.ShardID), 10))
-	qb.addParam(urlParamShardCount, strconv.FormatUint(uint64(searchReq.ShardCount), 10))
 	qb.addParam(QueryModeKey, searchReq.QueryMode)
 	// New RF1 params
 	qb.addParam(urlParamBlockID, searchReq.BlockID)
@@ -485,9 +469,9 @@ func BuildQueryRangeRequest(req *http.Request, searchReq *tempopb.QueryRangeRequ
 	qb.addParam(urlParamEncoding, searchReq.Encoding)
 	qb.addParam(urlParamSize, strconv.Itoa(int(searchReq.Size_)))
 	qb.addParam(urlParamFooterSize, strconv.Itoa(int(searchReq.FooterSize)))
-	if len(searchReq.DedicatedColumns) > 0 {
-		columnsJSON, _ := json.Marshal(searchReq.DedicatedColumns)
-		qb.addParam(urlParamDedicatedColumns, string(columnsJSON))
+
+	if len(dedicatedColumnsJSON) > 0 && dedicatedColumnsJSON != "null" { // if a caller marshals a nil dedicated cols we will receive the string "null"
+		qb.addParam(urlParamDedicatedColumns, dedicatedColumnsJSON)
 	}
 
 	if len(searchReq.Query) > 0 {
@@ -661,7 +645,9 @@ func BuildSearchRequest(req *http.Request, searchReq *tempopb.SearchRequest) (*h
 
 // BuildSearchBlockRequest takes a tempopb.SearchBlockRequest and populates the passed http.Request
 // with the appropriate params. If no http.Request is provided a new one is created.
-func BuildSearchBlockRequest(req *http.Request, searchReq *tempopb.SearchBlockRequest) (*http.Request, error) {
+// dedicatedColumnsJSON should be generated using the DedicatedColumnsToJSON struct which produces the expected string
+// value and memoizes results to prevent redundant marshaling.
+func BuildSearchBlockRequest(req *http.Request, searchReq *tempopb.SearchBlockRequest, dedicatedColumnsJSON string) (*http.Request, error) {
 	if req == nil {
 		req = &http.Request{
 			URL: &url.URL{},
@@ -684,12 +670,8 @@ func BuildSearchBlockRequest(req *http.Request, searchReq *tempopb.SearchBlockRe
 	qb.addParam(urlParamDataEncoding, searchReq.DataEncoding)
 	qb.addParam(urlParamVersion, searchReq.Version)
 	qb.addParam(urlParamFooterSize, strconv.FormatUint(uint64(searchReq.FooterSize), 10))
-	if len(searchReq.DedicatedColumns) > 0 {
-		columnsJSON, err := json.Marshal(searchReq.DedicatedColumns)
-		if err != nil {
-			return nil, err
-		}
-		qb.addParam(urlParamDedicatedColumns, string(columnsJSON))
+	if len(dedicatedColumnsJSON) > 0 && dedicatedColumnsJSON != "null" { // if a caller marshals a nil dedicated cols we will receive the string "null"
+		qb.addParam(urlParamDedicatedColumns, dedicatedColumnsJSON)
 	}
 
 	req.URL.RawQuery = qb.query()
@@ -805,4 +787,24 @@ func ValidateAndSanitizeRequest(r *http.Request) (string, string, string, int64,
 		return "", "", "", 0, 0, fmt.Errorf("http parameter start must be before end. received start=%d end=%d", startTime, endTime)
 	}
 	return blockStart, blockEnd, queryMode, startTime, endTime, nil
+}
+
+func ReadBodyToBuffer(resp *http.Response) (*bytes.Buffer, error) {
+	length := resp.ContentLength
+	// if ContentLength is -1 if the length is unknown. default to bytes.MinRead (its what buffer.ReadFrom does)
+	if length < 0 {
+		length = bytes.MinRead
+	}
+	// buffer.ReadFrom always allocs at least bytes.MinRead past the end of the actual required length b/c of how io.EOF is handled. this prevents extending the internal
+	// slice unnecessarily.  https://github.com/golang/go/issues/21852
+	length += bytes.MinRead
+
+	// alloc a buffer to store the response body
+	buffer := bytes.NewBuffer(make([]byte, 0, length))
+	_, err := buffer.ReadFrom(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return buffer, nil
 }

@@ -44,9 +44,10 @@ import (
 )
 
 const (
-	image      = "tempo:latest"
-	debugImage = "tempo-debug:latest"
-	queryImage = "tempo-query:latest"
+	image       = "tempo:latest"
+	debugImage  = "tempo-debug:latest"
+	queryImage  = "tempo-query:latest"
+	jaegerImage = "jaegertracing/jaeger-query:1.60"
 )
 
 // GetExtraArgs returns the extra args to pass to the Docker command used to run Tempo.
@@ -249,20 +250,36 @@ func NewTempoScalableSingleBinary(replica int, extraArgs ...string) *e2e.HTTPSer
 
 func NewTempoQuery() *e2e.HTTPService {
 	args := []string{
-		"--query.base-path=/",
-		"--grpc-storage-plugin.configuration-file=" + filepath.Join(e2e.ContainerSharedDir, "config-tempo-query.yaml"),
+		"-config=" + filepath.Join(e2e.ContainerSharedDir, "config-tempo-query.yaml"),
 	}
 
 	s := e2e.NewHTTPService(
 		"tempo-query",
 		queryImage,
+		e2e.NewCommandWithoutEntrypoint("/tempo-query", args...),
+		e2e.NewTCPReadinessProbe(7777),
+		7777,
+	)
+
+	s.SetBackoff(TempoBackoff())
+	return s
+}
+
+func NewJaegerQuery() *e2e.HTTPService {
+	args := []string{
+		"--grpc-storage.server=tempo-query:7777",
+		"--span-storage.type=grpc",
+	}
+
+	s := e2e.NewHTTPService(
+		"jaeger-query",
+		jaegerImage,
 		e2e.NewCommandWithoutEntrypoint("/go/bin/query-linux", args...),
 		e2e.NewHTTPReadinessProbe(16686, "/", 200, 299),
 		16686,
 	)
 
 	s.SetBackoff(TempoBackoff())
-
 	return s
 }
 
@@ -575,6 +592,12 @@ func CallBuildinfo(t *testing.T, svc *e2e.HTTPService) {
 		_, ok := jsonResponse[key]
 		require.True(t, ok)
 	}
+
+	version, ok := jsonResponse["version"].(string)
+	require.True(t, ok)
+	semverRegex := `^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`
+	require.Regexp(t, semverRegex, version)
+
 	defer res.Body.Close()
 }
 

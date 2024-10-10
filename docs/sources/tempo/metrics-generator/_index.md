@@ -1,7 +1,7 @@
 ---
 aliases:
-- /docs/tempo/latest/server_side_metrics/
-- /docs/tempo/latest/metrics-generator/
+  - ./server_side_metrics # /docs/tempo/<TEMPO_VERSION>/server_side_metrics/
+  - /docs/tempo/<TEMPO_VERSION>/metrics-generator/
 title: Metrics-generator
 description: Metrics-generator is an optional Tempo component that derives metrics from ingested traces.
 weight: 500
@@ -10,14 +10,10 @@ weight: 500
 # Metrics-generator
 
 Metrics-generator is an optional Tempo component that derives metrics from ingested traces.
-If present, the distributor will write received spans to both the ingester and the metrics-generator.
+If present, the distributors write received spans to both the ingester and the metrics-generator.
 The metrics-generator processes spans and writes metrics to a Prometheus data source using the Prometheus remote write protocol.
 
-{{< admonition type="note" >}}
-Enabling metrics generation and remote writing them to Grafana Cloud Metrics produces extra active series that could impact your billing. For more information on billing, refer to [Billing and usage](/docs/grafana-cloud/billing-and-usage/).
-{{% /admonition %}}
-
-## Overview
+## Architecture
 
 Metrics-generator leverages the data available in the ingest path in Tempo to provide additional value by generating metrics from traces.
 
@@ -29,9 +25,9 @@ Every processor derives different metrics. Currently, the following processors a
 - Span metrics
 - Local blocks
 
-<p align="center"><img src="server-side-metrics-arch-overview.png" alt="Service metrics architecture"></p>
+<p align="center"><img src="tempo-metrics-gen-overview.svg" alt="Service metrics architecture"></p>
 
-## Service graphs
+### Service graphs
 
 Service graphs are the representations of the relationships between services within a distributed system.
 
@@ -39,19 +35,19 @@ This service graphs processor builds a map of services by analyzing traces, with
 Edges are spans with a parent-child relationship, that represent a jump (e.g. a request) between two services.
 The amount of request and their duration are recorded as metrics, which are used to represent the graph.
 
-To learn more about this processor, read the [documentation]({{< relref "./service_graphs" >}}).
+To learn more about this processor, refer to the [service graph]({{< relref "./service_graphs" >}}) documentation.
 
-## Span metrics
+### Span metrics
 
-The span metrics processor derives RED (Request, Error and Duration) metrics from spans.
+The span metrics processor derives RED (Request, Error, and Duration) metrics from spans.
 
-The span metrics processor will compute the total count and the duration of spans for every unique combination of dimensions.
+The span metrics processor computes the total count and the duration of spans for every unique combination of dimensions.
 Dimensions can be the service name, the operation, the span kind, the status code and any tag or attribute present in the span.
 The more dimensions are enabled, the higher the cardinality of the generated metrics.
 
-To learn more about this processor, read the [documentation]({{< relref "./span_metrics" >}}).
+To learn more about this processor, refer to the [span metrics]({{< relref "./span_metrics" >}}) documentation.
 
-## Local blocks
+### Local blocks
 
 The local blocks processor stores spans for a set period of time and
 enables more complex APIs to perform calculations on the data. The processor must be
@@ -68,8 +64,18 @@ When multi-tenancy is enabled, the metrics-generator forwards the `X-Scope-OrgID
 
 ## Native histograms
 
-The metrics-generator supports the ability to produce [native histograms](https://grafana.com/docs/grafana-cloud/whats-new/native-histograms/), for
-high-resolution data. Users must [update the receiving endpoint](https://grafana.com/docs/mimir/latest/configure/configure-native-histograms-ingestion/) to ingest native
-histograms, and [update histogram queries](https://grafana.com/docs/mimir/latest/visualize/native-histograms/) in their dashboards.
+[Native histograms](https://grafana.com/docs/grafana-cloud/whats-new/native-histograms/) are a data type in Prometheus that can produce, store, and query high-resolution histograms of observations.
+It usually offers higher resolution and more straightforward instrumentation than classic histograms.
+
+The metrics-generator supports the ability to produce native histograms for
+high-resolution data. Users must [update the receiving endpoint](https://grafana.com/docs/mimir/<MIMIR_VERSION>/configure/configure-native-histograms-ingestion/) to ingest native
+histograms, and [update histogram queries](https://grafana.com/docs/mimir/<MIMIR_VERSION>/visualize/native-histograms/) in their dashboards.
 
 To learn more about the configuration, refer to the [Metrics-generator]({{< relref "../configuration#metrics-generator" >}}) section of the Tempo Configuration documentation.
+
+## Use metrics-generator in Grafana Cloud
+
+If you want to enable metrics-generator for your Grafana Cloud account, refer to the [Metrics-generator in Grafana Cloud](https://grafana.com/docs/grafana-cloud/send-data/traces/metrics-generator/) documentation.
+
+Enabling metrics generation and remote writing them to Grafana Cloud Metrics produces extra active series that could impact your billing.
+For more information on billing, refer to [Billing and usage](/docs/grafana-cloud/billing-and-usage/).

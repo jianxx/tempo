@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -60,8 +59,8 @@ func TestSearchCompleteBlock(t *testing.T) {
 			)
 		})
 		if vers == vparquet4.VersionString {
-			t.Run("event/link query", func(t *testing.T) {
-				runEventLinkSearchTest(t, vers)
+			t.Run("event/link/instrumentation query", func(t *testing.T) {
+				runEventLinkInstrumentationSearchTest(t, vers)
 			})
 		}
 	}
@@ -1469,7 +1468,8 @@ func tagNamesRunner(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMetada
 			actualMap := valueCollector.Strings()
 
 			if (bm.Version == vparquet4.VersionString) && (tc.name == "resource match" || tc.name == "span match") {
-				// v4 has events and links
+				// v4 has scope, events, and links
+				tc.expected["instrumentation"] = []string{"scope-attr-str"}
 				tc.expected["event"] = []string{"exception.message"}
 				tc.expected["link"] = []string{"relation"}
 			}
@@ -1619,7 +1619,7 @@ func runCompleteBlockSearchTest(t *testing.T, blockVersion string, runners ...ru
 	// Write to wal
 	wal := w.WAL()
 
-	meta := &backend.BlockMeta{BlockID: uuid.New(), TenantID: testTenantID, DedicatedColumns: dc}
+	meta := &backend.BlockMeta{BlockID: backend.NewUUID(), TenantID: testTenantID, DedicatedColumns: dc}
 	head, err := wal.NewBlock(meta, model.CurrentEncoding)
 	require.NoError(t, err)
 	dec := model.MustNewSegmentDecoder(model.CurrentEncoding)
@@ -1657,7 +1657,7 @@ func runCompleteBlockSearchTest(t *testing.T, blockVersion string, runners ...ru
 	// todo: do some compaction and then call runner again
 }
 
-func runEventLinkSearchTest(t *testing.T, blockVersion string) {
+func runEventLinkInstrumentationSearchTest(t *testing.T, blockVersion string) {
 	// only run this test for vparquet4
 	if blockVersion != vparquet4.VersionString {
 		return
@@ -1721,12 +1721,21 @@ func runEventLinkSearchTest(t *testing.T, blockVersion string) {
 		{
 			Query: "{ link:traceID = `" + wantIDText + "` }",
 		},
+		{
+			Query: "{ instrumentation:name = `scope-1` }",
+		},
+		{
+			Query: "{ instrumentation:version = `version-1` }",
+		},
+		{
+			Query: "{ instrumentation.scope-attr-str = `scope-attr-1` }",
+		},
 	}
 
 	// Write to wal
 	wal := w.WAL()
 
-	meta := &backend.BlockMeta{BlockID: uuid.New(), TenantID: testTenantID}
+	meta := &backend.BlockMeta{BlockID: backend.NewUUID(), TenantID: testTenantID}
 	head, err := wal.NewBlock(meta, model.CurrentEncoding)
 	require.NoError(t, err)
 	dec := model.MustNewSegmentDecoder(model.CurrentEncoding)
@@ -1892,6 +1901,14 @@ func makeExpectedTrace() (
 				},
 				ScopeSpans: []*v1.ScopeSpans{
 					{
+						Scope: &v1_common.InstrumentationScope{
+							Name:                   "scope-1",
+							Version:                "version-1",
+							DroppedAttributesCount: 1,
+							Attributes: []*v1_common.KeyValue{
+								stringKV("scope-attr-str", "scope-attr-1"),
+							},
+						},
 						Spans: []*v1.Span{
 							{
 								TraceId:           id,
@@ -2189,7 +2206,7 @@ func TestWALBlockGetMetrics(t *testing.T) {
 	r.EnablePolling(ctx, &mockJobSharder{})
 
 	wal := w.WAL()
-	meta := &backend.BlockMeta{BlockID: uuid.New(), TenantID: testTenantID}
+	meta := &backend.BlockMeta{BlockID: backend.NewUUID(), TenantID: testTenantID}
 	head, err := wal.NewBlock(meta, model.CurrentEncoding)
 	require.NoError(t, err)
 
@@ -2247,7 +2264,7 @@ func TestSearchForTagsAndTagValues(t *testing.T) {
 
 	r.EnablePolling(context.Background(), &mockJobSharder{})
 
-	blockID := uuid.New()
+	blockID := backend.NewUUID()
 
 	wal := w.WAL()
 

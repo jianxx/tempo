@@ -29,7 +29,7 @@ func newQueryRangeStreamingGRPCHandler(cfg Config, next pipeline.AsyncRoundTripp
 			URL:    &url.URL{Path: downstreamPath},
 			Header: http.Header{},
 			Body:   io.NopCloser(bytes.NewReader([]byte{})),
-		}, req)
+		}, req, "") // dedicated cols are never passed from the caller
 
 		ctx := srv.Context()
 		httpReq = httpReq.WithContext(ctx)
@@ -87,8 +87,8 @@ func newMetricsQueryRangeHTTPHandler(cfg Config, next pipeline.AsyncRoundTripper
 		if err != nil {
 			level.Error(logger).Log("msg", "query range: query range combiner failed", "err", err)
 			return &http.Response{
-				StatusCode: http.StatusInternalServerError,
-				Status:     http.StatusText(http.StatusInternalServerError),
+				StatusCode: http.StatusBadRequest,
+				Status:     http.StatusText(http.StatusBadRequest),
 				Body:       io.NopCloser(strings.NewReader(err.Error())),
 			}, nil
 		}

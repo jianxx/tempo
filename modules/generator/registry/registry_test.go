@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/grafana/tempo/modules/overrides"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,16 +80,17 @@ func TestManagedRegistry_histogram(t *testing.T) {
 	registry := New(&Config{}, &mockOverrides{}, "test", appender, log.NewNopLogger())
 	defer registry.Close()
 
-	histogram := registry.NewHistogram("histogram", []float64{1.0, 2.0}, "classic")
+	histogram := registry.NewHistogram("histogram", []float64{1.0, 2.0}, HistogramModeClassic)
 
 	histogram.ObserveWithExemplar(newLabelValueCombo([]string{"label"}, []string{"value-1"}), 1.0, "", 1.0)
 
 	expectedSamples := []sample{
-		newSample(map[string]string{"__name__": "histogram_count", "label": "value-1", "__metrics_gen_instance": mustGetHostname()}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_sum", "label": "value-1", "__metrics_gen_instance": mustGetHostname()}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_bucket", "label": "value-1", "__metrics_gen_instance": mustGetHostname(), "le": "1"}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_bucket", "label": "value-1", "__metrics_gen_instance": mustGetHostname(), "le": "2"}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_bucket", "label": "value-1", "__metrics_gen_instance": mustGetHostname(), "le": "+Inf"}, 0, 1.0),
+		newSample(map[string]string{"__name__": "histogram_count", "label": "value-1", "__metrics_gen_instance": mustGetHostname()}, 0, 0),
+		newSample(map[string]string{"__name__": "histogram_count", "label": "value-1", "__metrics_gen_instance": mustGetHostname()}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_sum", "label": "value-1", "__metrics_gen_instance": mustGetHostname()}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_bucket", "label": "value-1", "__metrics_gen_instance": mustGetHostname(), "le": "1"}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_bucket", "label": "value-1", "__metrics_gen_instance": mustGetHostname(), "le": "2"}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_bucket", "label": "value-1", "__metrics_gen_instance": mustGetHostname(), "le": "+Inf"}, 1, 1.0),
 	}
 	collectRegistryMetricsAndAssert(t, registry, appender, expectedSamples)
 }
@@ -228,18 +230,19 @@ func TestManagedRegistry_maxLabelNameLength(t *testing.T) {
 	defer registry.Close()
 
 	counter := registry.NewCounter("counter")
-	histogram := registry.NewHistogram("histogram", []float64{1.0}, "classic")
+	histogram := registry.NewHistogram("histogram", []float64{1.0}, HistogramModeClassic)
 
 	counter.Inc(registry.NewLabelValueCombo([]string{"very_lengthy_label"}, []string{"very_length_value"}), 1.0)
 	histogram.ObserveWithExemplar(registry.NewLabelValueCombo([]string{"another_very_lengthy_label"}, []string{"another_very_lengthy_value"}), 1.0, "", 1.0)
 
 	expectedSamples := []sample{
 		newSample(map[string]string{"__name__": "counter", "very_len": "very_", "__metrics_gen_instance": mustGetHostname()}, 0, 0.0),
-		newSample(map[string]string{"__name__": "counter", "very_len": "very_", "__metrics_gen_instance": mustGetHostname()}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_count", "another_": "anoth", "__metrics_gen_instance": mustGetHostname()}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_sum", "another_": "anoth", "__metrics_gen_instance": mustGetHostname()}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_bucket", "another_": "anoth", "__metrics_gen_instance": mustGetHostname(), "le": "1"}, 0, 1.0),
-		newSample(map[string]string{"__name__": "histogram_bucket", "another_": "anoth", "__metrics_gen_instance": mustGetHostname(), "le": "+Inf"}, 0, 1.0),
+		newSample(map[string]string{"__name__": "counter", "very_len": "very_", "__metrics_gen_instance": mustGetHostname()}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_count", "another_": "anoth", "__metrics_gen_instance": mustGetHostname()}, 0, 0),
+		newSample(map[string]string{"__name__": "histogram_count", "another_": "anoth", "__metrics_gen_instance": mustGetHostname()}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_sum", "another_": "anoth", "__metrics_gen_instance": mustGetHostname()}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_bucket", "another_": "anoth", "__metrics_gen_instance": mustGetHostname(), "le": "1"}, 1, 1.0),
+		newSample(map[string]string{"__name__": "histogram_bucket", "another_": "anoth", "__metrics_gen_instance": mustGetHostname(), "le": "+Inf"}, 1, 1.0),
 	}
 	collectRegistryMetricsAndAssert(t, registry, appender, expectedSamples)
 }
@@ -258,32 +261,22 @@ func TestValidLabelValueCombo(t *testing.T) {
 func TestHistogramOverridesConfig(t *testing.T) {
 	cases := []struct {
 		name                string
-		nativeHistogramMode string
+		nativeHistogramMode HistogramMode
 		typeOfHistogram     interface{}
 	}{
 		{
-			"empty",
-			"",
-			&histogram{},
-		},
-		{
-			"bad",
-			"invalid",
-			&histogram{},
-		},
-		{
 			"classic",
-			"classic",
+			HistogramModeClassic,
 			&histogram{},
 		},
 		{
 			"native",
-			"native",
+			HistogramModeNative,
 			&nativeHistogram{},
 		},
 		{
 			"both",
-			"both",
+			HistogramModeBoth,
 			&nativeHistogram{},
 		},
 	}
@@ -291,14 +284,7 @@ func TestHistogramOverridesConfig(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			appender := &capturingAppender{}
-			overrides := &mockOverrides{
-
-				// TODO: Review this test.  Since we no longer switch on the overrides,
-				// this is only testing the New call returns the correct implementation
-				// based on the received string.  We might have coverage elsewhere.
-
-				// generateNativeHistograms: c.nativeHistogramMode,
-			}
+			overrides := &mockOverrides{}
 			registry := New(&Config{}, overrides, "test", appender, log.NewNopLogger())
 			defer registry.Close()
 
@@ -353,7 +339,7 @@ func collectRegistryMetricsAndAssert(t *testing.T, r *ManagedRegistry, appender 
 type mockOverrides struct {
 	maxActiveSeries          uint32
 	disableCollection        bool
-	generateNativeHistograms string
+	generateNativeHistograms overrides.HistogramMethod
 }
 
 var _ Overrides = (*mockOverrides)(nil)
@@ -370,7 +356,7 @@ func (m *mockOverrides) MetricsGeneratorDisableCollection(string) bool {
 	return m.disableCollection
 }
 
-func (m *mockOverrides) MetricsGeneratorGenerateNativeHistograms(_ string) string {
+func (m *mockOverrides) MetricsGeneratorGenerateNativeHistograms(_ string) overrides.HistogramMethod {
 	return m.generateNativeHistograms
 }
 

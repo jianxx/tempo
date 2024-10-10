@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -102,11 +103,6 @@ func TestQuerierParseSearchRequest(t *testing.T) {
 				Tags:            map[string]string{},
 				SpansPerSpanSet: defaultSpansPerSpanSet,
 			},
-		},
-		{
-			name:     "invalid traceql query",
-			urlQuery: "q=" + url.QueryEscape(`{ .foo="bar" `),
-			err:      "invalid TraceQL query: parse error at line 1, col 14: syntax error: unexpected $end",
 		},
 		{
 			name:     "traceql query and tags",
@@ -482,7 +478,10 @@ func TestBuildSearchBlockRequest(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		actualURL, err := BuildSearchBlockRequest(tc.httpReq, tc.req)
+		jsonBytes, err := json.Marshal(tc.req.DedicatedColumns)
+		require.NoError(t, err)
+
+		actualURL, err := BuildSearchBlockRequest(tc.httpReq, tc.req, string(jsonBytes))
 		assert.NoError(t, err)
 		assert.Equal(t, tc.query, actualURL.URL.String())
 	}
@@ -710,20 +709,21 @@ func TestQueryRangeRoundtrip(t *testing.T) {
 		{
 			name: "not empty!",
 			req: &tempopb.QueryRangeRequest{
-				Query:      "{ foo = `bar` }",
-				Start:      uint64(24 * time.Hour),
-				End:        uint64(25 * time.Hour),
-				Step:       uint64(30 * time.Second),
-				ShardID:    1,
-				ShardCount: 2,
-				QueryMode:  "foo",
+				Query:     "{ foo = `bar` }",
+				Start:     uint64(24 * time.Hour),
+				End:       uint64(25 * time.Hour),
+				Step:      uint64(30 * time.Second),
+				QueryMode: "foo",
 			},
 		},
 	}
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			httpReq := BuildQueryRangeRequest(nil, tc.req)
+			jsonBytes, err := json.Marshal(tc.req.DedicatedColumns)
+			require.NoError(t, err)
+
+			httpReq := BuildQueryRangeRequest(nil, tc.req, string(jsonBytes))
 			actualReq, err := ParseQueryRangeRequest(httpReq)
 			require.NoError(t, err)
 			assert.Equal(t, tc.req, actualReq)

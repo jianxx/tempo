@@ -135,7 +135,7 @@ func openWALBlock(filename, path string, ingestionSlack, _ time.Duration) (commo
 				switch e.Key {
 				case columnPathTraceID:
 					traceID := e.Value.ByteArray()
-					b.meta.ObjectAdded(traceID, 0, 0)
+					b.meta.ObjectAdded(0, 0)
 					page.ids.Set(traceID, int64(match.RowNumber[0])) // Save rownumber for the trace ID
 				}
 			}
@@ -339,7 +339,7 @@ func (b *walBlock) AppendTrace(id common.ID, trace *tempopb.Trace, start, end ui
 		dataquality.WarnRootlessTrace(b.meta.TenantID, dataquality.PhaseTraceFlushedToWal)
 	}
 
-	start, end = b.adjustTimeRangeForSlack(start, end, 0)
+	start, end = b.adjustTimeRangeForSlack(start, end)
 
 	// add to current
 	_, err := b.writer.Write([]*Trace{b.buffer})
@@ -347,7 +347,7 @@ func (b *walBlock) AppendTrace(id common.ID, trace *tempopb.Trace, start, end ui
 		return fmt.Errorf("error writing row: %w", err)
 	}
 
-	b.meta.ObjectAdded(id, start, end)
+	b.meta.ObjectAdded(start, end)
 	b.ids.Set(id, int64(b.ids.Len())) // Next row number
 
 	b.unflushedSize += int64(estimateMarshalledSizeFromTrace(b.buffer))
@@ -355,9 +355,10 @@ func (b *walBlock) AppendTrace(id common.ID, trace *tempopb.Trace, start, end ui
 	return nil
 }
 
-func (b *walBlock) adjustTimeRangeForSlack(start, end uint32, additionalStartSlack time.Duration) (uint32, uint32) {
+// It controls the block start/end date as a sliding window.
+func (b *walBlock) adjustTimeRangeForSlack(start, end uint32) (uint32, uint32) {
 	now := time.Now()
-	startOfRange := uint32(now.Add(-b.ingestionSlack).Add(-additionalStartSlack).Unix())
+	startOfRange := uint32(now.Add(-b.ingestionSlack).Unix())
 	endOfRange := uint32(now.Add(b.ingestionSlack).Unix())
 
 	warn := false
@@ -365,7 +366,7 @@ func (b *walBlock) adjustTimeRangeForSlack(start, end uint32, additionalStartSla
 		warn = true
 		start = uint32(now.Unix())
 	}
-	if end > endOfRange {
+	if end > endOfRange || end < start {
 		warn = true
 		end = uint32(now.Unix())
 	}
@@ -513,6 +514,9 @@ func (b *walBlock) Clear() error {
 }
 
 func (b *walBlock) FindTraceByID(ctx context.Context, id common.ID, opts common.SearchOptions) (*tempopb.Trace, error) {
+	ctx, span := tracer.Start(ctx, "walBlock.FindTraceByID")
+	defer span.End()
+
 	trs := make([]*tempopb.Trace, 0)
 
 	for _, page := range b.flushed {
@@ -545,7 +549,7 @@ func (b *walBlock) FindTraceByID(ctx context.Context, id common.ID, opts common.
 		}
 	}
 
-	combiner := trace.NewCombiner(opts.MaxBytes)
+	combiner := trace.NewCombiner(opts.MaxBytes, false)
 	for i, tr := range trs {
 		_, err := combiner.ConsumeWithFinal(tr, i == len(trs)-1)
 		if err != nil {
@@ -558,6 +562,9 @@ func (b *walBlock) FindTraceByID(ctx context.Context, id common.ID, opts common.
 }
 
 func (b *walBlock) Search(ctx context.Context, req *tempopb.SearchRequest, _ common.SearchOptions) (*tempopb.SearchResponse, error) {
+	ctx, span := tracer.Start(ctx, "walBlock.Search")
+	defer span.End()
+
 	results := &tempopb.SearchResponse{
 		Metrics: &tempopb.SearchMetrics{},
 	}
@@ -588,6 +595,9 @@ func (b *walBlock) Search(ctx context.Context, req *tempopb.SearchRequest, _ com
 }
 
 func (b *walBlock) SearchTags(ctx context.Context, scope traceql.AttributeScope, cb common.TagsCallback, _ common.SearchOptions) error {
+	ctx, span := tracer.Start(ctx, "walBlock.SearchTags")
+	defer span.End()
+
 	for i, blockFlush := range b.readFlushes() {
 		file, err := blockFlush.file(ctx)
 		if err != nil {
@@ -607,6 +617,9 @@ func (b *walBlock) SearchTags(ctx context.Context, scope traceql.AttributeScope,
 }
 
 func (b *walBlock) SearchTagValues(ctx context.Context, tag string, cb common.TagValuesCallback, opts common.SearchOptions) error {
+	ctx, span := tracer.Start(ctx, "walBlock.SearchTags")
+	defer span.End()
+
 	att, ok := translateTagToAttribute[tag]
 	if !ok {
 		att = traceql.NewAttribute(tag)
@@ -622,6 +635,9 @@ func (b *walBlock) SearchTagValues(ctx context.Context, tag string, cb common.Ta
 }
 
 func (b *walBlock) SearchTagValuesV2(ctx context.Context, tag traceql.Attribute, cb common.TagValuesCallbackV2, _ common.SearchOptions) error {
+	ctx, span := tracer.Start(ctx, "walBlock.SearchTagsV2")
+	defer span.End()
+
 	for i, blockFlush := range b.readFlushes() {
 		file, err := blockFlush.file(ctx)
 		if err != nil {
@@ -641,6 +657,9 @@ func (b *walBlock) SearchTagValuesV2(ctx context.Context, tag traceql.Attribute,
 }
 
 func (b *walBlock) Fetch(ctx context.Context, req traceql.FetchSpansRequest, _ common.SearchOptions) (traceql.FetchSpansResponse, error) {
+	ctx, span := tracer.Start(ctx, "walBlock.Fetch")
+	defer span.End()
+
 	// todo: this same method is called in backendBlock.Fetch. is there anyway to share this?
 	err := checkConditions(req.Conditions)
 	if err != nil {
@@ -686,6 +705,9 @@ func (b *walBlock) Fetch(ctx context.Context, req traceql.FetchSpansRequest, _ c
 }
 
 func (b *walBlock) FetchTagValues(ctx context.Context, req traceql.FetchTagValuesRequest, cb traceql.FetchTagValuesCallback, opts common.SearchOptions) error {
+	ctx, span := tracer.Start(ctx, "walBlock.FetchTagValues")
+	defer span.End()
+
 	err := checkConditions(req.Conditions)
 	if err != nil {
 		return fmt.Errorf("conditions invalid: %w", err)
@@ -747,6 +769,9 @@ func (b *walBlock) FetchTagValues(ctx context.Context, req traceql.FetchTagValue
 }
 
 func (b *walBlock) FetchTagNames(ctx context.Context, req traceql.FetchTagsRequest, cb traceql.FetchTagsCallback, opts common.SearchOptions) error {
+	ctx, span := tracer.Start(ctx, "walBlock.FetchTagNames")
+	defer span.End()
+
 	err := checkConditions(req.Conditions)
 	if err != nil {
 		return fmt.Errorf("conditions invalid: %w", err)

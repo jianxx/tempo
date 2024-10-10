@@ -5,13 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/grafana/tempo/modules/overrides"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/prometheus/model/exemplar"
 	promhistogram "github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
+	"go.uber.org/atomic"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -38,7 +38,7 @@ type nativeHistogram struct {
 	// Can be "native", classic", "both" to determine which histograms to
 	// generate.  A diff in the configured value on the processors will cause a
 	// reload of the process, and a new instance of the histogram to be created.
-	histogramOverride string
+	histogramOverride HistogramMode
 }
 
 type nativeHistogramSeries struct {
@@ -47,6 +47,20 @@ type nativeHistogramSeries struct {
 	promHistogram prometheus.Histogram
 	lastUpdated   int64
 	histogram     *dto.Histogram
+
+	// firstSeries is used to track if this series is new to the counter.
+	// This is used in classic histograms to ensure that new counters begin with 0.
+	// This avoids Prometheus throwing away the first value in the series,
+	// due to the transition from null -> x.
+	firstSeries *atomic.Bool
+}
+
+func (hs *nativeHistogramSeries) isNew() bool {
+	return hs.firstSeries.Load()
+}
+
+func (hs *nativeHistogramSeries) registerSeenSeries() {
+	hs.firstSeries.Store(false)
 }
 
 var (
@@ -54,7 +68,7 @@ var (
 	_ metric    = (*nativeHistogram)(nil)
 )
 
-func newNativeHistogram(name string, buckets []float64, onAddSeries func(uint32) bool, onRemoveSeries func(count uint32), traceIDLabelName string, histogramOverride string) *nativeHistogram {
+func newNativeHistogram(name string, buckets []float64, onAddSeries func(uint32) bool, onRemoveSeries func(count uint32), traceIDLabelName string, histogramOverride HistogramMode) *nativeHistogram {
 	if onAddSeries == nil {
 		onAddSeries = func(uint32) bool {
 			return true
@@ -62,10 +76,6 @@ func newNativeHistogram(name string, buckets []float64, onAddSeries func(uint32)
 	}
 	if onRemoveSeries == nil {
 		onRemoveSeries = func(uint32) {}
-	}
-
-	if histogramOverride == "" {
-		histogramOverride = "native"
 	}
 
 	if traceIDLabelName == "" {
@@ -117,6 +127,7 @@ func (h *nativeHistogram) newSeries(labelValueCombo *LabelValueCombo, value floa
 			NativeHistogramMinResetDuration: 15 * time.Minute,
 		}),
 		lastUpdated: 0,
+		firstSeries: atomic.NewBool(true),
 	}
 
 	h.updateSeries(newSeries, value, traceID, multiplier)
@@ -175,7 +186,7 @@ func (h *nativeHistogram) collectMetrics(appender storage.Appender, timeMs int64
 		s.histogram = encodedMetric.GetHistogram()
 
 		// If we are in "both" or "classic" mode, also emit classic histograms.
-		if overrides.HasClassicHistograms(h.histogramOverride) {
+		if hasClassicHistograms(h.histogramOverride) {
 			classicSeries, classicErr := h.classicHistograms(appender, lb, timeMs, s)
 			if classicErr != nil {
 				return activeSeries, classicErr
@@ -184,7 +195,7 @@ func (h *nativeHistogram) collectMetrics(appender storage.Appender, timeMs int64
 		}
 
 		// If we are in "both" or "native" mode, also emit native histograms.
-		if overrides.HasNativeHistograms(h.histogramOverride) {
+		if hasNativeHistograms(h.histogramOverride) {
 			nativeErr := h.nativeHistograms(appender, lb, timeMs, s)
 			if nativeErr != nil {
 				return activeSeries, nativeErr
@@ -272,6 +283,15 @@ func (h *nativeHistogram) nativeHistograms(appender storage.Appender, lb *labels
 }
 
 func (h *nativeHistogram) classicHistograms(appender storage.Appender, lb *labels.Builder, timeMs int64, s *nativeHistogramSeries) (activeSeries int, err error) {
+	if s.isNew() {
+		lb.Set(labels.MetricName, h.metricName+"_count")
+		_, err = appender.Append(0, lb.Labels(), timeMs-1, 0)
+		if err != nil {
+			return activeSeries, err
+		}
+		s.registerSeenSeries()
+	}
+
 	// sum
 	lb.Set(labels.MetricName, h.metricName+"_sum")
 	_, err = appender.Append(0, lb.Labels(), timeMs, s.histogram.GetSampleSum())
